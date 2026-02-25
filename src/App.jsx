@@ -49,9 +49,8 @@ const CustomAudioPlayer = ({ audioFile, onDelete }) => {
 
   const handleVolume = (e) => {
     const vol = Number(e.target.value);
-    audioRef.current.volume = vol;
+    try { audioRef.current.volume = Math.min(vol, 1); } catch(err) {}
     setVolume(vol);
-    // Sincronizar dinámicamente con la grabación en vivo
     if (audioRef.current.recordGainNode) {
         audioRef.current.recordGainNode.gain.value = vol;
     }
@@ -75,28 +74,18 @@ const CustomAudioPlayer = ({ audioFile, onDelete }) => {
             {audioFile.name}
           </p>
         </div>
-        <button 
-          onClick={() => onDelete(audioFile.id)} 
-          className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
-          title="Eliminar pista"
-        >
+        <button onClick={() => onDelete(audioFile.id)} className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0" title="Eliminar pista">
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
 
       <div className="flex items-center gap-3">
-        <button 
-          onClick={togglePlay} 
-          className="p-2 bg-lime-500 hover:bg-lime-400 rounded-full text-gray-900 transition-colors flex-shrink-0 shadow-md shadow-lime-900/20"
-        >
+        <button onClick={togglePlay} className="p-2 bg-lime-500 hover:bg-lime-400 rounded-full text-gray-900 transition-colors flex-shrink-0 shadow-md shadow-lime-900/20">
           {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
         </button>
         
         <div className="flex-1 flex flex-col gap-1.5">
-          <input 
-            type="range" min="0" max={duration || 0} step="0.1" value={progress} onChange={handleSeek}
-            className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-lime-500"
-          />
+          <input type="range" min="0" max={duration || 0} step="0.1" value={progress} onChange={handleSeek} className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-lime-500" />
           <div className="flex justify-between text-[10px] text-gray-400 font-mono leading-none">
             <span>{formatTime(progress)}</span>
             <span>{formatTime(duration)}</span>
@@ -107,9 +96,10 @@ const CustomAudioPlayer = ({ audioFile, onDelete }) => {
       <div className="flex items-center gap-2 mt-1">
         <Volume2 className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
         <input 
-          type="range" min="0" max="1" step="0.01" value={volume} onChange={handleVolume}
+          type="range" min="0" max="2" step="0.05" value={volume} onChange={handleVolume}
           className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-lime-500"
         />
+        <span className="text-[10px] font-mono text-gray-400 w-8 text-right">{Math.round(volume * 100)}%</span>
       </div>
     </div>
   );
@@ -124,15 +114,16 @@ export default function App() {
   const audioCtxRef = useRef(null);
   const audioSourcesMap = useRef(new Map());
   const micSourceRef = useRef(null);
+  const micGainNodeRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const animationFrameRef = useRef(null);
 
-  // Referencias para la barra de micrófono
   const micBarRef = useRef(null);
   const micAnimRef = useRef(null);
 
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
+  const [micVolume, setMicVolume] = useState(1);
   const [canvasFormat, setCanvasFormat] = useState('horizontal');
   const [currentScene, setCurrentScene] = useState('1');
   const [isRecording, setIsRecording] = useState(false);
@@ -272,13 +263,30 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [switchScene]);
 
+  // Función para organizar el orden de las capas (Encima o Debajo)
+  const moveLayer = (dir) => {
+    setElements(prev => {
+        const idx = prev.findIndex(e => e.id === selectedId);
+        if (idx < 0) return prev;
+        const next = [...prev];
+        if (dir === -1 && idx > 0) {
+            // Bajar capa
+            [next[idx-1], next[idx]] = [next[idx], next[idx-1]];
+        } else if (dir === 1 && idx < prev.length - 1) {
+            // Subir capa
+            [next[idx+1], next[idx]] = [next[idx], next[idx+1]];
+        }
+        return next;
+    });
+  };
+
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
 
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingQuality = 'high'; // Calidad alta para fluidez en videos
 
     ctx.fillStyle = '#1e293b'; 
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -299,7 +307,6 @@ export default function App() {
       if (el.type === 'camera' && videoRef.current && videoRef.current.readyState >= 2) {
         ctx.filter = 'brightness(0.85) contrast(1.15) saturate(1.1)';
         
-        // Aquí se respeta el Modo Espejo de forma dinámica
         if (el.mirror !== false) {
           ctx.translate(layout.x + layout.w, layout.y);
           ctx.scale(-1, 1);
@@ -373,7 +380,7 @@ export default function App() {
                 id: 'cam_1', 
                 type: 'camera', 
                 scene: 'todas',
-                mirror: true, // El modo espejo arranca encendido por defecto
+                mirror: true,
                 layouts: {
                   horizontal: { x: (1280 - w)/2, y: (720 - h)/2, w, h },
                   vertical: { x: (720 - w)/2, y: (1280 - h)/2, w, h }
@@ -395,7 +402,6 @@ export default function App() {
       if (audioStreamRef.current) audioStreamRef.current.getTracks().forEach(track => track.stop());
       setIsMicOn(false);
       
-      // Apagar analizador de barra
       if (micAnimRef.current) cancelAnimationFrame(micAnimRef.current);
       if (micBarRef.current) micBarRef.current.style.width = '0%';
     } else {
@@ -409,7 +415,6 @@ export default function App() {
         audioStreamRef.current = stream;
         setIsMicOn(true);
 
-        // Inicializar analizador visual del micrófono
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!audioCtxRef.current) {
           audioCtxRef.current = new AudioContext();
@@ -420,7 +425,13 @@ export default function App() {
         
         const source = ctx.createMediaStreamSource(stream);
         micSourceRef.current = source;
-        source.connect(analyser);
+        
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = micVolume;
+        micGainNodeRef.current = gainNode;
+        
+        source.connect(gainNode);
+        gainNode.connect(analyser);
 
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         
@@ -506,7 +517,6 @@ export default function App() {
     if (!canvasRef.current) return;
     recordedChunksRef.current = [];
     
-    // Captura visual del lienzo
     const canvasStream = canvasRef.current.captureStream(60);
     
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -516,12 +526,10 @@ export default function App() {
     const audioCtx = audioCtxRef.current;
     const dest = audioCtx.createMediaStreamDestination();
 
-    // 1. Agregar Micrófono a la grabación
-    if (audioStreamRef.current && micSourceRef.current) {
-        micSourceRef.current.connect(dest);
+    if (audioStreamRef.current && micGainNodeRef.current) {
+        micGainNodeRef.current.connect(dest);
     }
     
-    // 2. Agregar Audios de los Videos
     elementsRef.current.forEach(el => {
         if (el.type === 'video' && el.videoObj) {
             let source = audioSourcesMap.current.get(el.videoObj);
@@ -530,7 +538,6 @@ export default function App() {
                 audioSourcesMap.current.set(el.videoObj, source);
             }
             
-            // Creamos un nodo de ganancia para sincronizar con la barra de volumen
             const gainNode = audioCtx.createGain();
             gainNode.gain.value = el.videoObj.muted ? 0 : el.videoObj.volume;
             el.videoObj.recordGainNode = gainNode;
@@ -542,7 +549,6 @@ export default function App() {
         }
     });
 
-    // 3. Agregar Pistas de Audio subidas
     audioFilesRef.current.forEach(af => {
         const aEl = document.getElementById(af.id);
         if (aEl) {
@@ -568,36 +574,17 @@ export default function App() {
       ...dest.stream.getAudioTracks()
     ]);
     
-    // FORZAR Y ASEGURAR EXPORTACIÓN MP4
-    let mimeType = 'video/mp4';
-    let ext = 'mp4';
+    // FORMATO WEBM PARA MENOR PESO Y MAYOR ESTABILIDAD
+    let mimeType = 'video/webm;codecs=vp9,opus';
+    let ext = 'webm';
     
-    // Lista de formatos priorizando fuertemente MP4 con códec H.264
-    const supportedTypes = [
-        'video/mp4;codecs=avc1,mp4a.40.2',
-        'video/mp4',
-        'video/webm;codecs=h264', // H.264 garantiza compatibilidad como si fuera MP4
-        'video/webm;codecs=vp9',
-        'video/webm'
-    ];
-
-    for (const type of supportedTypes) {
-        if (MediaRecorder.isTypeSupported(type)) {
-            mimeType = type;
-            break;
-        }
-    }
-
-    // Si el códec es mp4 nativo o h264, lo guardamos forzosamente como .mp4
-    if (mimeType.includes('mp4') || mimeType.includes('h264')) {
-        ext = 'mp4';
-    } else {
-        ext = 'webm';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm';
     }
 
     mediaRecorderRef.current = new MediaRecorder(combinedStream, { 
       mimeType: mimeType, 
-      videoBitsPerSecond: 8000000, 
+      videoBitsPerSecond: 5000000, // Ajustado a 5Mbps para optimizar peso en WebM
       audioBitsPerSecond: 320000 
     });
 
@@ -611,7 +598,7 @@ export default function App() {
       setRecordedVideoInfo({ url, extension: ext });
     };
 
-    mediaRecorderRef.current.start(1000); // Guardado sin cortes
+    mediaRecorderRef.current.start(1000);
     setIsRecording(true);
   };
 
@@ -730,7 +717,6 @@ export default function App() {
                           {audioDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Micrófono'}</option>)}
                       </select>
                   )}
-                  {/* BARRA VISUAL DE MICRÓFONO */}
                   <div className="flex flex-col gap-1 w-full mt-2 bg-gray-800/50 p-2 rounded-md border border-gray-700/50">
                       <div className="flex justify-between items-center mb-1">
                           <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Nivel de Mic</span>
@@ -738,6 +724,18 @@ export default function App() {
                       </div>
                       <div className="h-2 w-full bg-gray-900 rounded-full overflow-hidden border border-gray-800">
                           <div ref={micBarRef} className="h-full bg-lime-500 w-0 transition-all duration-75"></div>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1" title="Amplificación del Micrófono">
+                          <Volume2 size={12} className="text-gray-400" />
+                          <input type="range" min="0" max="3" step="0.1" value={micVolume} 
+                            onChange={(e) => {
+                                const vol = Number(e.target.value);
+                                setMicVolume(vol);
+                                if (micGainNodeRef.current) micGainNodeRef.current.gain.value = vol;
+                            }} 
+                            className="w-full h-1.5 accent-lime-500 bg-gray-700 rounded-lg appearance-none cursor-pointer" 
+                          />
+                          <span className="text-[10px] font-mono text-gray-400 w-8 text-right">{Math.round(micVolume * 100)}%</span>
                       </div>
                   </div>
               </div>
@@ -798,7 +796,16 @@ export default function App() {
                    </select>
                 </div>
 
-                {/* BOTÓN RESTAURADO DEL MODO ESPEJO PARA LA CÁMARA */}
+                {/* BOTONES DE CAPAS RESTAURADOS */}
+                <div className="flex gap-2">
+                    <button onClick={() => moveLayer(-1)} className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 rounded-md text-sm border border-gray-700 text-gray-300 flex items-center justify-center gap-2 transition-all">
+                        <ArrowDown size={16}/> Bajar Capa
+                    </button>
+                    <button onClick={() => moveLayer(1)} className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 rounded-md text-sm border border-gray-700 text-gray-300 flex items-center justify-center gap-2 transition-all">
+                        <ArrowUp size={16}/> Subir Capa
+                    </button>
+                </div>
+
                 {selectedElement?.type === 'camera' && (
                     <button onClick={() => setElements(p => p.map(el => el.id === selectedId ? {...el, mirror: !el.mirror} : el))} className="w-full py-2 bg-gray-800 hover:bg-gray-700 rounded-md text-sm border border-gray-700 text-gray-300 flex items-center justify-center gap-2 transition-all mt-4">
                         <FlipHorizontal size={16}/> Alternar Modo Espejo
@@ -809,12 +816,12 @@ export default function App() {
                     <div className="bg-gray-800/50 p-3 rounded-lg border border-gray-700/50 space-y-3 mt-4">
                       <p className="text-[10px] text-gray-400 uppercase font-bold">Control Video</p>
                       <div className="flex justify-center gap-3">
-                          <button onClick={() => selectedElement.videoObj.currentTime -= 5} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-full text-gray-300 transition-colors"><Rewind size={16}/></button>
+                          <button onClick={() => selectedElement.videoObj.currentTime = Math.max(0, selectedElement.videoObj.currentTime - 5)} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-full text-gray-300 transition-colors"><Rewind size={16}/></button>
                           <button onClick={() => selectedElement.videoObj.paused ? selectedElement.videoObj.play() : selectedElement.videoObj.pause()} className="p-2 bg-lime-500 hover:bg-lime-400 rounded-full text-slate-900 shadow-lg">
                             {selectedElement.videoObj.paused ? <Play size={16} className="fill-current"/> : <Pause size={16} className="fill-current"/>}
                           </button>
                           <button onClick={() => { selectedElement.videoObj.pause(); selectedElement.videoObj.currentTime = 0; }} className="p-2 bg-red-600/20 hover:bg-red-600/30 rounded-full text-red-400 transition-colors"><StopCircle size={16}/></button>
-                          <button onClick={() => selectedElement.videoObj.currentTime += 5} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-full text-gray-300 transition-colors"><FastForward size={16}/></button>
+                          <button onClick={() => selectedElement.videoObj.currentTime = Math.min(selectedElement.videoObj.duration, selectedElement.videoObj.currentTime + 5)} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-full text-gray-300 transition-colors"><FastForward size={16}/></button>
                       </div>
                       
                       <div className="space-y-1">
@@ -827,18 +834,18 @@ export default function App() {
 
                       <div className="flex items-center gap-3 mt-3">
                           <Volume2 size={16} className="text-gray-400" />
-                          <input type="range" min="0" max="1" step="0.01" value={videoVolume} 
+                          <input type="range" min="0" max="2" step="0.05" value={videoVolume} 
                             onChange={(e) => {
                                 const vol = Number(e.target.value);
-                                selectedElement.videoObj.volume = vol;
+                                try { selectedElement.videoObj.volume = Math.min(vol, 1); } catch(err){}
                                 setVideoVolume(vol);
-                                // Sincroniza el volumen con la grabación en vivo
                                 if (selectedElement.videoObj.recordGainNode) {
                                     selectedElement.videoObj.recordGainNode.gain.value = vol;
                                 }
                             }} 
                             className="w-full h-1.5 accent-lime-500 bg-gray-700 rounded-lg appearance-none cursor-pointer" 
                           />
+                          <span className="text-[10px] font-mono text-gray-400 w-8 text-right">{Math.round(videoVolume * 100)}%</span>
                       </div>
                     </div>
                 )}
