@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera, StopCircle, Play, Image as ImageIcon, Trash2, Download, Mic, MicOff, MonitorPlay, Video, VideoOff, Upload, LayoutTemplate, Smartphone, Pause, FastForward, Rewind, ArrowUp, ArrowDown, Volume2, Music, FlipHorizontal, ChevronLeft, ChevronRight, RotateCcw, Presentation } from 'lucide-react';
 
 // --- REPRODUCTOR DE PISTAS DE AUDIO ---
-const CustomAudioPlayer = ({ audioFile, onDelete }) => {
+const CustomAudioPlayer = ({ audioFile, onDelete, onAttachBus }) => {
   const audioRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -12,6 +12,9 @@ const CustomAudioPlayer = ({ audioFile, onDelete }) => {
   useEffect(() => {
     const aud = audioRef.current;
     if (!aud) return;
+    
+    // Conectar al bus maestro de grabación al iniciar
+    if (onAttachBus) onAttachBus(aud);
 
     const updateTime = () => setProgress(aud.currentTime);
     const updateDuration = () => setDuration(aud.duration);
@@ -31,7 +34,7 @@ const CustomAudioPlayer = ({ audioFile, onDelete }) => {
       aud.removeEventListener('play', updatePlayState);
       aud.removeEventListener('pause', updatePlayState);
     };
-  }, []);
+  }, [onAttachBus]);
 
   const formatTime = (seconds) => {
     if (!seconds || isNaN(seconds)) return "00:00";
@@ -85,11 +88,14 @@ export default function App() {
   const videoStreamRef = useRef(null);
   const audioStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
-  const audioCtxRef = useRef(null);
-  const audioSourcesMap = useRef(new Map());
-  const micSourceRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const animationFrameRef = useRef(null);
+
+  // Referencias para el Bus Maestro de Audio
+  const audioCtxRef = useRef(null);
+  const destRef = useRef(null);
+  const audioSourcesMap = useRef(new Map());
+  const micSourceRef = useRef(null);
 
   const micBarRef = useRef(null);
   const micAnimRef = useRef(null);
@@ -137,6 +143,36 @@ export default function App() {
   useEffect(() => { canvasFormatRef.current = canvasFormat; }, [canvasFormat]);
   useEffect(() => { currentSceneRef.current = currentScene; }, [currentScene]);
   useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
+
+  // --- BUS MAESTRO DE AUDIO ---
+  // Esta función garantiza que todo sonido pase por nuestra "consola central"
+  const ensureAudioCtx = useCallback(() => {
+    if (!audioCtxRef.current) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtxRef.current = new AudioContext();
+        destRef.current = audioCtxRef.current.createMediaStreamDestination();
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume();
+    }
+  }, []);
+
+  const attachAudioToBus = useCallback((mediaEl) => {
+    ensureAudioCtx();
+    const ctx = audioCtxRef.current;
+    let source = audioSourcesMap.current.get(mediaEl);
+    if (!source) {
+        source = ctx.createMediaElementSource(mediaEl);
+        audioSourcesMap.current.set(mediaEl, source);
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = mediaEl.muted ? 0 : mediaEl.volume;
+        mediaEl.recordGainNode = gainNode;
+        source.connect(gainNode);
+        gainNode.connect(destRef.current); // Envia al archivo de grabación
+        gainNode.connect(ctx.destination); // Envia a los parlantes
+    }
+  }, [ensureAudioCtx]);
+
 
   useEffect(() => {
     const getDevices = async () => {
@@ -376,7 +412,6 @@ export default function App() {
 
   const handlePointerUp = () => { 
     if (interactState.current.action) {
-      // Sincronizar el estado final a React al soltar el click
       setElements([...elementsRef.current]);
       interactState.current = { action: null }; 
     }
@@ -431,14 +466,15 @@ export default function App() {
         audioStreamRef.current = stream;
         setIsMicOn(true);
 
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+        ensureAudioCtx();
         const ctx = audioCtxRef.current;
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         
         micSourceRef.current = ctx.createMediaStreamSource(stream);
         micSourceRef.current.connect(analyser);
+        // Conectar micrófono al bus maestro de grabación inmediatamente
+        micSourceRef.current.connect(destRef.current);
 
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         
@@ -473,9 +509,13 @@ export default function App() {
       const vid = document.createElement('video');
       vid.src = url; vid.muted = false; vid.loop = true;
       vid.onloadedmetadata = () => {
+        attachAudioToBus(vid);
         const aspect = vid.videoWidth / vid.videoHeight;
-        const h = 250; const w = h * aspect;
-        setElements(prev => [...prev, { id: newId, type: 'video', scene: currentScene, videoObj: vid, layouts: { horizontal: { x: 50, y: 50, w, h }, vertical: { x: 50, y: 50, w, h } } }]);
+        // Ajuste seguro para evitar desbordamientos en lienzos
+        let wH = 600; let hH = wH / aspect; if (hH > 500) { hH = 500; wH = hH * aspect; }
+        let wV = 500; let hV = wV / aspect; if (hV > 800) { hV = 800; wV = hV * aspect; }
+        
+        setElements(prev => [...prev, { id: newId, type: 'video', scene: currentScene, videoObj: vid, layouts: { horizontal: { x: (1280 - wH)/2, y: (720 - hH)/2, w: wH, h: hH }, vertical: { x: (720 - wV)/2, y: (1280 - hV)/2, w: wV, h: hV } } }]);
         setSelectedId(newId);
       };
     } else if (file.type.startsWith('audio/')) {
@@ -484,8 +524,10 @@ export default function App() {
       const img = new Image(); img.src = url;
       img.onload = () => {
         const aspect = img.width / img.height;
-        const h = 250; const w = h * aspect;
-        setElements(prev => [...prev, { id: newId, type: 'image', scene: currentScene, imageObj: img, layouts: { horizontal: { x: 50, y: 50, w, h }, vertical: { x: 50, y: 50, w, h } } }]);
+        let wH = 600; let hH = wH / aspect; if (hH > 500) { hH = 500; wH = hH * aspect; }
+        let wV = 500; let hV = wV / aspect; if (hV > 800) { hV = 800; wV = hV * aspect; }
+        
+        setElements(prev => [...prev, { id: newId, type: 'image', scene: currentScene, imageObj: img, layouts: { horizontal: { x: (1280 - wH)/2, y: (720 - hH)/2, w: wH, h: hH }, vertical: { x: (720 - wV)/2, y: (1280 - hV)/2, w: wV, h: hV } } }]);
         setSelectedId(newId);
       };
     }
@@ -504,9 +546,17 @@ export default function App() {
       img.onload = () => {
         images[i] = img; loaded++;
         if (loaded === files.length) {
-          const aspect = images[0].width / images[0].height;
-          const h = 360; const w = h * aspect;
-          setElements(prev => [...prev, { id, type: 'presentation', scene: currentScene, images, currentIndex: 0, layouts: { horizontal: { x: 100, y: 100, w, h }, vertical: { x: 100, y: 100, w, h } } }]);
+          const firstImg = images.find(img => img !== undefined);
+          const aspect = firstImg ? (firstImg.width / firstImg.height) : 1;
+          
+          // Cálculo estricto para que la presentación no se salga del lienzo ni horizontal ni vertical
+          let wH = 1000; let hH = wH / aspect;
+          if (hH > 600) { hH = 600; wH = hH * aspect; }
+          
+          let wV = 650; let hV = wV / aspect;
+          if (hV > 1100) { hV = 1100; wV = hV * aspect; }
+          
+          setElements(prev => [...prev, { id, type: 'presentation', scene: currentScene, images, currentIndex: 0, layouts: { horizontal: { x: (1280 - wH)/2, y: (720 - hH)/2, w: wH, h: hH }, vertical: { x: (720 - wV)/2, y: (1280 - hV)/2, w: wV, h: hV } } }]);
           setSelectedId(id);
         }
       };
@@ -514,57 +564,15 @@ export default function App() {
     e.target.value = null;
   };
 
-  // --- GRABACIÓN ESTABLE A MP4 ---
+  // --- GRABACIÓN MAESTRA ---
   const startRecording = () => {
     if (!canvasRef.current) return;
+    ensureAudioCtx(); // Garantizar que el bus de audio esté encendido
     recordedChunksRef.current = [];
     
     const canvasStream = canvasRef.current.captureStream(60);
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
-    const audioCtx = audioCtxRef.current;
-    const dest = audioCtx.createMediaStreamDestination();
-
-    if (audioStreamRef.current && micSourceRef.current) micSourceRef.current.connect(dest);
-    
-    elementsRef.current.forEach(el => {
-        if (el.type === 'video' && el.videoObj) {
-            let source = audioSourcesMap.current.get(el.videoObj);
-            if (!source) {
-                source = audioCtx.createMediaElementSource(el.videoObj);
-                audioSourcesMap.current.set(el.videoObj, source);
-            }
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = el.videoObj.muted ? 0 : el.videoObj.volume;
-            el.videoObj.recordGainNode = gainNode;
-
-            source.disconnect(); 
-            source.connect(gainNode);
-            gainNode.connect(dest); 
-            gainNode.connect(audioCtx.destination); 
-        }
-    });
-
-    audioFilesRef.current.forEach(af => {
-        const aEl = document.getElementById(af.id);
-        if (aEl) {
-            let source = audioSourcesMap.current.get(aEl);
-            if (!source) {
-                source = audioCtx.createMediaElementSource(aEl);
-                audioSourcesMap.current.set(aEl, source);
-            }
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = aEl.volume;
-            aEl.recordGainNode = gainNode;
-
-            source.disconnect();
-            source.connect(gainNode);
-            gainNode.connect(dest);
-            gainNode.connect(audioCtx.destination);
-        }
-    });
-
-    const combinedStream = new MediaStream([ ...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks() ]);
+    // Unimos el video con nuestro Destino de Audio Maestro (Bus Central)
+    const combinedStream = new MediaStream([ ...canvasStream.getVideoTracks(), ...destRef.current.stream.getAudioTracks() ]);
     
     // Forzar MP4 de alta calidad y estable
     let mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
@@ -583,8 +591,7 @@ export default function App() {
 
     mediaRecorderRef.current = new MediaRecorder(combinedStream, { 
       mimeType: mimeType, 
-      videoBitsPerSecond: 8000000, // 8 Mbps para nitidez
-      audioBitsPerSecond: 320000 
+      videoBitsPerSecond: 8000000 // 8 Mbps para nitidez
     });
 
     mediaRecorderRef.current.ondataavailable = (event) => {
@@ -592,12 +599,14 @@ export default function App() {
     };
 
     mediaRecorderRef.current.onstop = () => {
+      // Al detener, ensamblamos todo el video de una sola vez para que el MP4 quede perfecto
       const blob = new Blob(recordedChunksRef.current, { type: mimeType });
       const url = URL.createObjectURL(blob);
       setRecordedVideoInfo({ url, extension: ext });
     };
 
-    mediaRecorderRef.current.start(1000);
+    // INICIO DE GRABACIÓN DE CORRIDO (Sin cortes por milisegundos)
+    mediaRecorderRef.current.start();
     setIsRecording(true);
     setIsPaused(false);
   };
@@ -722,8 +731,9 @@ export default function App() {
                ))}
              </div>
              <div className="flex gap-2 bg-gray-900 p-2 rounded-lg border border-gray-800">
-                 <button onClick={() => setCanvasFormat('horizontal')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${canvasFormat === 'horizontal' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-800'}`}>16:9 (Horizontal)</button>
-                 <button onClick={() => setCanvasFormat('vertical')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${canvasFormat === 'vertical' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-800'}`}>9:16 (Vertical)</button>
+                 {/* Botones de formato bloqueados mientras se graba para evitar corrupción */}
+                 <button onClick={() => !isRecording && setCanvasFormat('horizontal')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${canvasFormat === 'horizontal' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-800'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}>16:9 (Horizontal)</button>
+                 <button onClick={() => !isRecording && setCanvasFormat('vertical')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${canvasFormat === 'vertical' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-800'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}>9:16 (Vertical)</button>
              </div>
           </div>
 
@@ -830,7 +840,7 @@ export default function App() {
                <h2 className="text-sm font-semibold text-gray-400 uppercase mb-4 tracking-widest">Audios</h2>
                <div className="flex flex-col gap-3">
                  {audioFiles.map(af => (
-                    <CustomAudioPlayer key={af.id} audioFile={af} onDelete={(id) => setAudioFiles(prev => prev.filter(a => a.id !== id))} />
+                    <CustomAudioPlayer key={af.id} audioFile={af} onDelete={(id) => setAudioFiles(prev => prev.filter(a => a.id !== id))} onAttachBus={attachAudioToBus} />
                  ))}
                </div>
             </div>
