@@ -111,6 +111,7 @@ export default function App() {
   const [audioFiles, setAudioFiles] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // Estados de control para video seleccionado
   const [videoProgress, setVideoProgress] = useState(0);
@@ -748,7 +749,7 @@ export default function App() {
                   <Download size={16}/> Descargar {recordedVideoInfo.extension.toUpperCase()}
               </a>
               <div className="w-px h-6 bg-gray-700 mx-1 self-center"></div>
-              <button onClick={() => setRecordedVideoInfo(null)} className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-gray-300 rounded-full text-sm font-medium border border-gray-700 hover:bg-gray-700 transition-colors">
+              <button onClick={() => setShowResetConfirm(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-gray-300 rounded-full text-sm font-medium border border-gray-700 hover:bg-gray-700 transition-colors">
                   <RotateCcw size={16}/> Volver a grabar
               </button>
             </div>
@@ -847,6 +848,21 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* POPUP DE CONFIRMACIÓN */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl max-w-sm w-full p-6 relative">
+            <h3 className="text-lg font-bold text-white mb-2">¿Volver a grabar?</h3>
+            <p className="text-sm text-gray-400 mb-6">Si vuelve a grabar, la grabación actual se perderá de forma permanente si no la ha descargado. ¿Está completamente seguro?</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowResetConfirm(false)} className="px-4 py-2 rounded-md font-medium text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors">Cancelar</button>
+              <button onClick={() => { setRecordedVideoInfo(null); setShowResetConfirm(false); }} className="px-4 py-2 rounded-md font-medium bg-red-600 text-white hover:bg-red-500 transition-colors shadow-lg">Sí, borrar y repetir</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
