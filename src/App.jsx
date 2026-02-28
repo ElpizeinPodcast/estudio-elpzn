@@ -427,8 +427,9 @@ export default function App() {
       setIsVideoOn(false);
     } else {
       try {
+        // Reducimos la exigencia de la cámara a 1280x720 (720p) a 30 FPS para equipos de bajos recursos (Similar a OBS)
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } } : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }
+          video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
         });
         videoStreamRef.current = stream;
         if (videoRef.current) {
@@ -571,7 +572,8 @@ export default function App() {
     ensureAudioCtx(); // Garantizar que el bus de audio esté encendido
     recordedChunksRef.current = [];
     
-    const canvasStream = canvasRef.current.captureStream(60);
+    // Bajamos la exigencia de FPS a 30 (como configurado en OBS) para que sea ligero
+    const canvasStream = canvasRef.current.captureStream(30);
     // Unimos el video con nuestro Destino de Audio Maestro (Bus Central)
     const combinedStream = new MediaStream([ ...canvasStream.getVideoTracks(), ...destRef.current.stream.getAudioTracks() ]);
     
@@ -592,7 +594,8 @@ export default function App() {
 
     mediaRecorderRef.current = new MediaRecorder(combinedStream, { 
       mimeType: mimeType, 
-      videoBitsPerSecond: 8000000 // 8 Mbps para nitidez
+      videoBitsPerSecond: 2500000, // 2500 Kbps (Bitrate de video de OBS)
+      audioBitsPerSecond: 160000   // 160 Kbps (Bitrate de audio de OBS)
     });
 
     mediaRecorderRef.current.ondataavailable = (event) => {
